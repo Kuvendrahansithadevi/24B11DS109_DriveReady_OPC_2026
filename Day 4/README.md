@@ -1,31 +1,96 @@
 # Task 4: Tool-Using LangChain Agent, Pydantic Validation & Google Sheets Integration
 
-## 1. What the Task Is & System Chosen
-- **Goal:** Upgrade the conversational assistant into a full **LangChain Agent** (`create_agent`) equipped with custom `@tool` functions, **Pydantic** input validation (`BaseModel` & `with_structured_output`), live **Google Sheets** persistence via `gspread`, execution trace inspection (`pretty_print()`), and tool-routing sensitivity experiments.
-- **Selected Business System:** **BrightSmile Dental Clinic** front-desk appointment and fee-lookup assistant.
-- **Environment & Setup:** Google Colab (Python 3) using `langchain`, `langchain-groq` (`ChatGroq` with `model="openai/gpt-oss-20b"`, `temperature=0.2`), `pydantic`, `gspread`, `GROQ_API_KEY` from Colab Secrets, and Google Colab OAuth (`google.colab.auth`).
+## 1. Project Overview & Business Domain
+- **Objective:** Upgrade the conversational assistant into a tool-calling **LangChain Agent** (`create_agent`) equipped with custom `@tool` functions, **Pydantic** input validation (`BaseModel` and `with_structured_output`), live **Google Sheets** persistence via `gspread`, execution trace inspection (`pretty_print()`), and tool-routing sensitivity experiments.
+- **Selected Domain:** **BrightSmile Dental Clinic** — an AI front-desk virtual assistant capable of quoting treatment fees, checking working hours, validating patient appointment details, and logging confirmed bookings directly to Google Sheets.
+- **Execution Environment:** Google Colab (Python 3).
 
-## 2. Core Implementation & Outputs (Cells 1–4)
-1. **Setup & Google Sheet Initialization (`Cell 1`):** Installed dependencies, initialized `ChatGroq`, authenticated the Google account, and created the **`BrightSmile Appointments`** spreadsheet with columns `["name", "service", "sessions", "date", "urgent", "total"]`.
-2. **Pydantic Model & Custom Tools (`Cell 2`):**
-   - Defined the `Appointment` Pydantic schema enforcing valid service names (`"general checkup"`, `"teeth cleaning"`, `"tooth extraction"`), positive session counts (`ge=1`), date string, and boolean urgency flag.
-   - Built three `@tool` functions with clear docstrings and type hints:
-     - `get_fee(service, sessions)`: Calculates total rupee fees (`300`, `1000`, `1500`) or reports unlisted services safely.
-     - `is_open(day)`: Returns clinic hours (`9 am to 7 pm` Mon–Sat, `Closed` on Sunday).
-     - `log_appointment(name, service, sessions, date, urgent)`: Validates inputs via `Appointment`, computes total cost, and appends confirmed bookings directly to Google Sheets.
-3. **Stateful Agent Execution (`Cell 3`):** Created `agent = create_agent(model=llm, tools=[get_fee, is_open, log_appointment], system_prompt=SYSTEM)` with full message history retention.
-   - **Output Observed:** Checked Sunday hours and multi-session fees accurately via tool calls, and logged confirmed appointments (e.g., *Hansitha, 2 urgent teeth cleaning sessions, 28 Nov, Rs 2000*) directly into the Google Sheet.
-4. **Trace Inspection & Edge-Case Testing (`Cell 4`):** Used `m.pretty_print()` to inspect `HumanMessage` -> `AIMessage` (`tool_calls`) -> `ToolMessage` -> final `AIMessage` steps, and verified safe handling when users request unlisted treatments (root canal), omit dates, or pass `0` sessions.
+---
 
-## 3. "Your 30%" Hands-On Work & Observations
+## 2. Architecture & Request Flow
+```text
+Patient Message + Conversation History
+       │
+       ▼
+LangChain Agent (create_agent + ChatGroq: openai/gpt-oss-20b, temp=0.2)
+       ├──► get_fee(service, sessions)         ──► Exact treatment fee calculation
+       ├──► is_open(day)                       ──► Daily clinic schedule lookup
+       └──► log_appointment(...)               ──► Pydantic Appointment validation
+                                                    └──► Google Sheets append_row
+       │
+       ▼
+Grounded Front-Desk Response (< 60 words, English or Telugu matching the patient)
+```
+
+---
+
+## 3. Tech Stack & Configuration
+| Component | Library / Service | Details |
+| :--- | :--- | :--- |
+| **LLM Provider** | `langchain-groq` (`ChatGroq`) | Model: `openai/gpt-oss-20b`, `temperature=0.2`, `max_retries=3` |
+| **Agent Framework** | `langchain` (`create_agent`, `@tool`) | Tool-calling loop inspected via `m.pretty_print()` |
+| **Data Validation** | `pydantic` (`BaseModel`, `Field`) | `Appointment` schema + `llm.with_structured_output(Appointment)` |
+| **Database / Logging** | `gspread`, `google.colab.auth` | Live Google Sheet: `BrightSmile Appointments` |
+| **Secrets Management** | `google.colab.userdata` | `GROQ_API_KEY` loaded securely from Colab Secrets |
+
+---
+
+## 4. Tools & Data Schema Reference
+
+### A. Pydantic Validation Schema (`Appointment`)
+| Field | Type / Constraint | Description |
+| :--- | :--- | :--- |
+| `name` | `str` | Patient's first name |
+| `service` | `Literal["general checkup", "teeth cleaning", "tooth extraction"]` | Restricts booking to valid clinic services |
+| `sessions` | `int` (`ge=1`) | Number of sessions (rejects `0` or negative counts) |
+| `date` | `str` | Appointment date as stated by the patient |
+| `urgent` | `bool` | Flags emergency/urgent slot requests |
+
+### B. Custom Agent Tools (`@tool`)
+| Tool Name | Parameters | Responsibility |
+| :--- | :--- | :--- |
+| `get_fee` | `service: str, sessions: int = 1` | Computes exact rupee totals (`Rs 300`, `Rs 1000`, `Rs 1500`) or reports unlisted treatments safely. |
+| `is_open` | `day: str` | Returns clinic hours (`9 am to 7 pm` Mon–Sat, `Closed on Sunday`). |
+| `log_appointment` | `name, service, sessions, date, urgent` | Validates fields through `Appointment`, computes total cost, and appends a confirmed row to Google Sheets. |
+
+---
+
+## 5. Core Implementation & Observed Outputs (Cells 1–4)
+
+### Cell 1: Setup & Google Sheet Initialization
+- Installed `langchain`, `langchain-groq`, and `gspread`, initialized `ChatGroq`, authenticated the Google account via `google.colab.auth`, and created/opened the **`BrightSmile Appointments`** spreadsheet with header columns `["name", "service", "sessions", "date", "urgent", "total"]`.
+
+### Cell 2: Pydantic Model & Custom `@tool` Definitions
+- Defined the `Appointment` validation model and implemented `get_fee`, `is_open`, and `log_appointment` with clear type hints and docstrings so the LLM knows when and how to invoke each tool.
+
+### Cell 3: Stateful Agent Execution & Live Sheet Logging
+- Built `agent = create_agent(model=llm, tools=[get_fee, is_open, log_appointment], system_prompt=SYSTEM)` with message history tracking.
+- **Observed Output:** Accurately checked Sunday closure and multi-session fees via tool calls, and appended confirmed bookings (e.g., *Hansitha, 2 urgent teeth cleaning sessions, 28 Nov, Rs 2000*) directly as a new row in Google Sheets.
+
+### Cell 4: Execution Trace Inspection & Edge-Case Testing
+- Inspected the full message chain (`HumanMessage` -> `AIMessage` with `tool_calls` -> `ToolMessage` -> final `AIMessage`) via `m.pretty_print()`.
+- Verified safe refusal/clarification when users ask for unlisted services (root canal), omit an appointment date, or request `0` sessions without writing invalid rows to Google Sheets.
+
+---
+
+## 6. "Your 30%" Hands-On Work & Experiments
+
 1. **Custom `@tool` Functions:** Converted clinic fee and schedule lookups into typed, docstring-documented LangChain `@tool` functions (`get_fee`, `is_open`).
 2. **Structured Extraction (`with_structured_output`):** Tested `llm.with_structured_output(Appointment)` across 5 messy, unformatted patient booking messages and verified clean extraction into validated `Appointment` objects.
-3. **Google Sheets Persistence (`log_appointment`):** Connected the `BrightSmile Appointments` Google Sheet and verified automatic row insertion only after all required patient fields were collected and validated.
-4. **Tool Docstring Sensitivity ("Break It" Experiment):** Temporarily renamed `is_open` to `tool1` with a vague docstring (`"does stuff"`), observed how removing descriptive tool metadata degrades reliable tool selection, and restored `is_open`.
-5. **Execution Trace Count (`pretty_print()`):** Inspected a multi-tool query (`"Are you open on Sunday and how much is 1 teeth cleaning?"`) on a fresh trace and counted the exact `AIMessage` (model calls) and `ToolMessage` (tool calls) steps executed by the agent loop.
-6. **RAG Knowledge Base Preparation (Before Day 5):** Created `clinic_facts.txt` containing 16 structured policies, timings, pricing rules, and clinic FAQs for retrieval-augmented generation.
+3. **Google Sheets Persistence (`log_appointment`):** Connected the `BrightSmile Appointments` Google Sheet and verified row insertion only after all required patient fields were collected and validated.
+4. **Tool Docstring Sensitivity ("Break It" Experiment):**
 
-## 4. How to Run
+| Experiment Step | Tool Configuration | Observed Behavior |
+| :--- | :--- | :--- |
+| **Broken state** | Renamed `is_open` to `tool1` with docstring `"does stuff"` | Removing semantic tool naming and descriptive docstrings degraded reliable tool routing on schedule queries. |
+| **Restored state** | Restored `@tool def is_open(day: str)` with clear docstring | Agent reliably invoked `is_open` for every weekday/Sunday timing question. |
+
+5. **Execution Trace Count (`pretty_print()`):** Ran a combined query (`"Are you open on Sunday and how much is 1 teeth cleaning?"`) on a fresh trace and counted the exact `AIMessage` (model calls) and `ToolMessage` (tool calls) steps executed by the agent loop.
+6. **RAG Knowledge Base Preparation (Before Day 5):** Created `clinic_facts.txt` containing 16 structured policies, timings, pricing rules, and clinic FAQs for Day 5 ChromaDB ingestion.
+
+---
+
+## 7. How to Run
 1. Add `GROQ_API_KEY` in Google Colab **Secrets** and enable **Notebook access**.
 2. Run **Cell 1** and complete the Google OAuth prompt to authorize Google Sheets access (use `gc.open("BrightSmile Appointments")` on subsequent runs).
-3. Run **Cells 2–4** and the experiment cells sequentially, then verify newly logged rows in the generated Google Sheet URL.
+3. Run **Cells 2–4** and the experiment cells sequentially, then verify newly logged appointment rows in the generated Google Sheet URL.
